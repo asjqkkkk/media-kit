@@ -1,3 +1,16 @@
+## 2.0.0
+
+- build: bump `media_kit` & `media_kit_video`
+
+## 1.0.7
+
+- build: bump `media_kit` & `media_kit_video`
+
+## 1.0.6
+
+ - **FIX**: add null checks for uri and textureId in MediaKitVideoPlayer.
+ - **FIX**: video_player black screen.
+
 ## 1.0.5
 
 - fix: `setVolume` implementation

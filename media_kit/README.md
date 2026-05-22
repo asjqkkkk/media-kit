@@ -38,17 +38,17 @@
 
 ```yaml
 dependencies:
-  media_kit: ^1.1.11 # Primary package.
-  media_kit_video: ^1.2.5 # For video rendering.
-  media_kit_libs_video: ^1.0.5 # Native video dependencies.
+  media_kit: ^1.2.6 # Primary package.
+  media_kit_video: ^2.0.1 # For video rendering.
+  media_kit_libs_video: ^1.0.7 # Native video dependencies.
 ```
 
 #### For apps that need audio playback:
 
 ```yaml
 dependencies:
-  media_kit: ^1.1.11 # Primary package.
-  media_kit_libs_audio: ^1.0.5 # Native audio dependencies.
+  media_kit: ^1.2.6 # Primary package.
+  media_kit_libs_audio: ^1.0.7 # Native audio dependencies.
 ```
 
 **Notes:**
@@ -1672,6 +1672,21 @@ This is as simple as [adding one line to `linux/CMakeLists.txt`](https://github.
 
 ```cmake
 target_link_libraries(${BINARY_NAME} PRIVATE ${MIMALLOC_LIB})
+```
+
+In case you prefer dynamic linking of mimalloc, you can additionally add the following line to your `linux/CMakeLists.txt`:
+
+```cmake
+# use dynamically linked mimalloc
+set(MIMALLOC_USE_STATIC_LIBS OFF)
+```
+
+In this case, please ensure you install `libmimalloc-dev` at compile time and `libmimalloc2.0` as runtime dependencies.
+
+#### Ubuntu/Debian
+
+```bash
+sudo apt install libmimalloc-dev libmimalloc2.0
 ```
 
 ### Web
