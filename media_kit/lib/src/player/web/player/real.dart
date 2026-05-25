@@ -5,12 +5,12 @@
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
 import 'dart:async';
 import 'dart:convert';
-import 'dart:js' as js;
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 import 'dart:collection';
-import 'dart:html' as html;
+import 'package:web/web.dart' as web;
 import 'package:meta/meta.dart';
-import 'package:collection/collection.dart';
 import 'package:synchronized/synchronized.dart';
 
 import 'package:media_kit/src/player/platform_player.dart';
@@ -41,9 +41,15 @@ void webEnsureInitialized({String? libmpv}) {}
 /// {@endtemplate}
 class WebPlayer extends PlatformPlayer {
   /// {@macro web_player}
-  WebPlayer({required super.configuration})
-      : id = js.context[kInstanceCount] ?? 0,
-        element = html.VideoElement() {
+  WebPlayer({required super.configuration}) {
+    var idProperty = globalContext.getProperty(kInstanceCount.toJS);
+    if (idProperty.isUndefinedOrNull) {
+      id = 0;
+    } else {
+      id = int.parse(idProperty.toString());
+    }
+    element = web.HTMLVideoElement();
+
     lock.synchronized(() async {
       element
         // Do not add autoplay=false attribute: https://stackoverflow.com/a/19664804/12825435
@@ -57,11 +63,13 @@ class WebPlayer extends PlatformPlayer {
         ..setAttribute('playsinline', 'true')
         ..pause();
       // Initialize or increment the instance count.
-      js.context[kInstanceCount] ??= 0;
-      js.context[kInstanceCount]++;
-      // Store the [html.VideoElement] instance in global [js.context].
-      js.context[kInstances] ??= js.JsObject.jsify({});
-      js.context[kInstances][id] = element;
+      globalContext[kInstanceCount] ??= 0.toJS;
+      globalContext[kInstanceCount] =
+          (int.parse((globalContext[kInstanceCount]!).toString()) + 1).toJS;
+      // Store the [html.VideoElement] instance in [globalContext].
+      globalContext[kInstances] ??= JSObject();
+      (globalContext[kInstances] as JSObject)
+          .setProperty(id.toString().toJS, element);
       // --------------------------------------------------
       // Event streams handling:
       element.onPlay.listen((_) {
@@ -113,9 +121,12 @@ class WebPlayer extends PlatformPlayer {
 
           // Clamp between current [Media]'s start & end.
           try {
-            if (_index >= 0 && _index < _playlist.length) {
-              final start = _playlist[_index].start?.inMilliseconds;
-              final end = _playlist[_index].end?.inMilliseconds;
+            if (state.playlist.index >= 0 &&
+                state.playlist.index < state.playlist.medias.length) {
+              final start = state
+                  .playlist.medias[state.playlist.index].start?.inMilliseconds;
+              final end = state
+                  .playlist.medias[state.playlist.index].end?.inMilliseconds;
               if (position != null) {
                 position = Duration(
                   milliseconds: position.inMilliseconds.clamp(
@@ -125,7 +136,8 @@ class WebPlayer extends PlatformPlayer {
                   ),
                 );
 
-                if (position == _playlist[_index].end) {
+                if (position ==
+                    state.playlist.medias[state.playlist.index].end) {
                   // NOTE: Playlist index transition. onEnded callback will not be invoked.
                   await _transition();
                   return;
@@ -238,7 +250,7 @@ class WebPlayer extends PlatformPlayer {
           // PlayerStream.error
           final error = element.error!;
           if (!errorController.isClosed) {
-            errorController.add(error.message ?? '');
+            errorController.add(error.message);
           }
         });
       });
@@ -326,7 +338,7 @@ class WebPlayer extends PlatformPlayer {
         ..remove();
 
       // Remove the [html.VideoElement] instance from global [js.context].
-      js.context[kInstances].deleteProperty(id);
+      (globalContext[kInstances] as JSObject).delete(id.toString().toJS);
 
       await super.dispose();
     }
@@ -377,12 +389,10 @@ class WebPlayer extends PlatformPlayer {
       //   playingController.add(false);
       // }
 
-      _index = index;
-      _playlist = playlist;
-
-      _shuffle.clear();
+      _playlistBeforeShuffle.clear();
 
       state = state.copyWith(
+        shuffle: false,
         playlist: Playlist(
           playlist,
           index: index,
@@ -397,18 +407,16 @@ class WebPlayer extends PlatformPlayer {
         );
       }
 
-      _loadSource(_playlist[_index]);
+      _loadSource(state.playlist.medias[state.playlist.index]);
 
       if (play) {
-        element.play().catchError(
-          (error) {
-            // PlayerStream.error
-            final e = error as html.DomException;
-            if (!errorController.isClosed) {
-              errorController.add(e.message ?? '');
-            }
-          },
-        );
+        element.play().toDart.catchError((error) {
+          final e = error as web.DOMException;
+          if (!errorController.isClosed) {
+            errorController.add(e.message);
+          }
+          return null;
+        });
       } else {
         // A minimal quirk to match the native backend behavior.
         state = state.copyWith(
@@ -442,7 +450,7 @@ class WebPlayer extends PlatformPlayer {
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
 
-      element.children.clear();
+      element.innerHTML = ''.toJS;
       state = state.copyWith(track: Track());
       if (!trackController.isClosed) {
         trackController.add(Track());
@@ -452,9 +460,7 @@ class WebPlayer extends PlatformPlayer {
         ..src = ''
         ..load();
 
-      _shuffle.clear();
-      _index = 0;
-      _playlist = [];
+      _playlistBeforeShuffle.clear();
 
       // Reset the remaining attributes.
       state = PlayerState().copyWith(
@@ -462,8 +468,10 @@ class WebPlayer extends PlatformPlayer {
         rate: state.rate,
         pitch: state.pitch,
         playlistMode: state.playlistMode,
+        shuffle: false,
         audioDevice: state.audioDevice,
         audioDevices: state.audioDevices,
+        playlist: const Playlist([]),
       );
       if (!open) {
         // Do not emit PlayerStream.playlist if invoked from [open].
@@ -501,6 +509,9 @@ class WebPlayer extends PlatformPlayer {
       // if (!playlistModeController.isClosed) {
       //   playlistModeController.add(PlaylistMode.none);
       // }
+      if (!shuffleController.isClosed) {
+        shuffleController.add(false);
+      }
       if (!audioParamsController.isClosed) {
         audioParamsController.add(const AudioParams());
       }
@@ -548,13 +559,14 @@ class WebPlayer extends PlatformPlayer {
       }
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
-      element.play().catchError(
+      element.play().toDart.catchError(
         (error) {
           // PlayerStream.error
-          final e = error as html.DomException;
+          final e = error as web.DOMException;
           if (!errorController.isClosed) {
-            errorController.add(e.message ?? '');
+            errorController.add(e.message);
           }
+          return null;
         },
       );
     }
@@ -618,11 +630,9 @@ class WebPlayer extends PlatformPlayer {
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
 
-      _playlist = [..._playlist, media];
-
       state = state.copyWith(
         playlist: state.playlist.copyWith(
-          medias: _playlist,
+          medias: [...state.playlist.medias, media],
         ),
       );
       if (!playlistController.isClosed) {
@@ -651,51 +661,57 @@ class WebPlayer extends PlatformPlayer {
 
       // If we remove the last item in the playlist while playlist mode is none or single, then playback will stop.
       // In this situation, the playlist doesn't seem to be updated, so we manually update it.
-      if (_index == index &&
-          _playlist.length - 1 == index &&
+      if (state.playlist.index == index &&
+          state.playlist.medias.length - 1 == index &&
           [
             PlaylistMode.none,
             PlaylistMode.single,
-          ].contains(_playlistMode)) {
-        _index = _playlist.length - 2 < 0 ? 0 : _playlist.length - 2;
-
+          ].contains(state.playlistMode)) {
         state = state.copyWith(
           // Allow playOrPause /w state.completed code-path to play the playlist again.
           completed: true,
+          playing: false,
           playlist: state.playlist.copyWith(
-            medias: _playlist.sublist(0, _playlist.length - 1),
-            index: _index,
+            index: state.playlist.medias.length - 2 < 0
+                ? 0
+                : state.playlist.medias.length - 2,
+            medias: state.playlist.medias
+                .sublist(0, state.playlist.medias.length - 1),
           ),
         );
+        if (!playingController.isClosed) {
+          playingController.add(false);
+        }
         if (!completedController.isClosed) {
           completedController.add(true);
         }
         if (!playlistController.isClosed) {
           playlistController.add(state.playlist);
         }
+        await pause(synchronized: false);
       }
       // If we remove the last item in the playlist while playlist mode is loop, jump to the index 0.
-      else if (_index == index &&
-          _playlist.length - 1 == index &&
-          _playlistMode == PlaylistMode.loop) {
-        element.children.clear();
+      else if (state.playlist.index == index &&
+          state.playlist.medias.length - 1 == index &&
+          state.playlistMode == PlaylistMode.loop) {
+        element.innerHTML = ''.toJS;
         state = state.copyWith(track: Track());
         if (!trackController.isClosed) {
           trackController.add(Track());
         }
 
-        _index = 0;
-        _loadSource(_playlist[_index]);
-        await play(synchronized: false);
-
+        final medias =
+            state.playlist.medias.sublist(0, state.playlist.medias.length - 1);
         state = state.copyWith(
           // Allow playOrPause /w state.completed code-path to play the playlist again.
           completed: true,
           playlist: state.playlist.copyWith(
-            medias: _playlist.sublist(0, _playlist.length - 1),
+            medias: medias,
             index: 0,
           ),
         );
+        _loadSource(state.playlist.medias[state.playlist.index]);
+        await play(synchronized: false);
         if (!completedController.isClosed) {
           completedController.add(true);
         }
@@ -706,19 +722,12 @@ class WebPlayer extends PlatformPlayer {
 
       // Default
       else {
-        _playlist = [..._playlist];
-        _playlist.removeAt(index);
-
-        // If the current index is greater than the removed index, then the current index should be reduced by 1.
-        // If the current index is equal or less than the removed index, then the current index should not be changed.
-        if (_index > index) {
-          _index--;
-        }
-
         state = state.copyWith(
           playlist: state.playlist.copyWith(
-            medias: _playlist,
-            index: _index,
+            index: state.playlist.index > index
+                ? state.playlist.index - 1
+                : state.playlist.index,
+            medias: [...state.playlist.medias]..removeAt(index),
           ),
         );
         if (!playlistController.isClosed) {
@@ -748,19 +757,19 @@ class WebPlayer extends PlatformPlayer {
       Future<void> start() async {
         state = state.copyWith(
           playlist: state.playlist.copyWith(
-            index: _index,
+            index: state.playlist.index,
           ),
         );
         if (!playlistController.isClosed) {
           playlistController.add(state.playlist);
         }
 
-        element.children.clear();
+        element.innerHTML = ''.toJS;
         state = state.copyWith(track: Track());
         if (!trackController.isClosed) {
           trackController.add(Track());
         }
-        _loadSource(_playlist[_index]);
+        _loadSource(state.playlist.medias[state.playlist.index]);
         await play(synchronized: false);
 
         state = state.copyWith(playing: true);
@@ -769,11 +778,15 @@ class WebPlayer extends PlatformPlayer {
         }
       }
 
-      switch (_playlistMode) {
+      switch (state.playlistMode) {
         case PlaylistMode.none:
           {
-            if (_index < _playlist.length - 1) {
-              _index++;
+            if (state.playlist.index < state.playlist.medias.length - 1) {
+              state = state.copyWith(
+                playlist: state.playlist.copyWith(
+                  index: state.playlist.index + 1,
+                ),
+              );
               await start();
             } else {
               // No transition.
@@ -782,8 +795,12 @@ class WebPlayer extends PlatformPlayer {
           }
         case PlaylistMode.single:
           {
-            if (_index < _playlist.length - 1) {
-              _index++;
+            if (state.playlist.index < state.playlist.medias.length - 1) {
+              state = state.copyWith(
+                playlist: state.playlist.copyWith(
+                  index: state.playlist.index + 1,
+                ),
+              );
               await start();
             } else {
               // No transition.
@@ -792,7 +809,12 @@ class WebPlayer extends PlatformPlayer {
           }
         case PlaylistMode.loop:
           {
-            _index = (_index + 1) % _playlist.length;
+            state = state.copyWith(
+              playlist: state.playlist.copyWith(
+                index:
+                    (state.playlist.index + 1) % state.playlist.medias.length,
+              ),
+            );
             await start();
             break;
           }
@@ -820,19 +842,19 @@ class WebPlayer extends PlatformPlayer {
       Future<void> start() async {
         state = state.copyWith(
           playlist: state.playlist.copyWith(
-            index: _index,
+            index: state.playlist.index,
           ),
         );
         if (!playlistController.isClosed) {
           playlistController.add(state.playlist);
         }
 
-        element.children.clear();
+        element.innerHTML = ''.toJS;
         state = state.copyWith(track: Track());
         if (!trackController.isClosed) {
           trackController.add(Track());
         }
-        _loadSource(_playlist[_index]);
+        _loadSource(state.playlist.medias[state.playlist.index]);
         await play(synchronized: false);
 
         state = state.copyWith(playing: true);
@@ -841,11 +863,15 @@ class WebPlayer extends PlatformPlayer {
         }
       }
 
-      switch (_playlistMode) {
+      switch (state.playlistMode) {
         case PlaylistMode.none:
           {
-            if (_index > 0) {
-              _index--;
+            if (state.playlist.index > 0) {
+              state = state.copyWith(
+                playlist: state.playlist.copyWith(
+                  index: state.playlist.index - 1,
+                ),
+              );
               await start();
             } else {
               // No transition.
@@ -854,8 +880,12 @@ class WebPlayer extends PlatformPlayer {
           }
         case PlaylistMode.single:
           {
-            if (_index > 0) {
-              _index--;
+            if (state.playlist.index > 0) {
+              state = state.copyWith(
+                playlist: state.playlist.copyWith(
+                  index: state.playlist.index - 1,
+                ),
+              );
               await start();
             } else {
               // No transition.
@@ -864,7 +894,12 @@ class WebPlayer extends PlatformPlayer {
           }
         case PlaylistMode.loop:
           {
-            _index = (_index - 1) % _playlist.length;
+            state = state.copyWith(
+              playlist: state.playlist.copyWith(
+                index:
+                    (state.playlist.index - 1) % state.playlist.medias.length,
+              ),
+            );
             await start();
             break;
           }
@@ -890,14 +925,18 @@ class WebPlayer extends PlatformPlayer {
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
 
-      _index = index;
+      state = state.copyWith(
+        playlist: state.playlist.copyWith(
+          index: index,
+        ),
+      );
 
-      element.children.clear();
+      element.innerHTML = ''.toJS;
       state = state.copyWith(track: Track());
       if (!trackController.isClosed) {
         trackController.add(Track());
       }
-      _loadSource(_playlist[_index]);
+      _loadSource(state.playlist.medias[state.playlist.index]);
       await play(synchronized: false);
 
       state = state.copyWith(playing: true);
@@ -905,11 +944,6 @@ class WebPlayer extends PlatformPlayer {
         playingController.add(true);
       }
 
-      state = state.copyWith(
-        playlist: state.playlist.copyWith(
-          index: _index,
-        ),
-      );
       if (!playlistController.isClosed) {
         playlistController.add(state.playlist);
       }
@@ -937,7 +971,9 @@ class WebPlayer extends PlatformPlayer {
 
       // ---------------------------------------------
       final map = SplayTreeMap<double, Media>.from(
-        _playlist.asMap().map((key, value) => MapEntry(key * 1.0, value)),
+        state.playlist.medias
+            .asMap()
+            .map((key, value) => MapEntry(key * 1.0, value)),
       );
       final item = map.remove(from * 1.0);
       if (item != null) {
@@ -946,20 +982,18 @@ class WebPlayer extends PlatformPlayer {
       final keys = map.keys.toList();
       final values = map.values.toList();
 
-      final current = _index;
-
-      _index = keys.contains(current * 1.0)
-          ? keys.indexOf(current * 1.0)
-          : keys.indexOf(to - 0.5);
-      _playlist = values;
-      // ---------------------------------------------
+      final current = state.playlist.index;
 
       state = state.copyWith(
         playlist: Playlist(
-          _playlist,
-          index: _index,
+          values,
+          index: keys.contains(current * 1.0)
+              ? keys.indexOf(current * 1.0)
+              : keys.indexOf(to - 0.5),
         ),
       );
+      // ---------------------------------------------
+
       if (!playlistController.isClosed) {
         playlistController.add(state.playlist);
       }
@@ -1012,7 +1046,6 @@ class WebPlayer extends PlatformPlayer {
       }
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
-      _playlistMode = playlistMode;
 
       state = state.copyWith(playlistMode: playlistMode);
       if (!playlistModeController.isClosed) {
@@ -1127,40 +1160,46 @@ class WebPlayer extends PlatformPlayer {
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
 
-      final current = _playlist[_index];
+      final current = state.playlist.medias.atOrNull(state.playlist.index);
 
-      if (shuffle && _shuffle.isEmpty) {
-        _shuffle.addAll(_playlist);
-        if (_playlist.length > 1) {
-          while (ListEquality().equals(_shuffle, _playlist)) {
-            _playlist.shuffle();
-          }
-        }
-        _index = _playlist.indexOf(current);
+      if (current == null) return;
+
+      if (shuffle && _playlistBeforeShuffle.isEmpty) {
+        _playlistBeforeShuffle.addAll(state.playlist.medias);
+
+        final shuffledPlaylist = <Media>[...state.playlist.medias]..shuffle();
 
         state = state.copyWith(
-          playlist: Playlist(
-            [..._playlist],
-            index: _index,
+          shuffle: shuffle,
+          playlist: state.playlist.copyWith(
+            index: shuffledPlaylist.indexOf(current),
+            medias: shuffledPlaylist,
           ),
         );
+
+        if (!shuffleController.isClosed) {
+          shuffleController.add(shuffle);
+        }
         if (!playlistController.isClosed) {
           playlistController.add(state.playlist);
         }
-      } else if (!shuffle && _shuffle.isNotEmpty) {
-        _playlist.clear();
-        _playlist.addAll(_shuffle);
-        _index = _playlist.indexOf(current);
-        _shuffle.clear();
-
+      } else if (!shuffle && _playlistBeforeShuffle.isNotEmpty) {
+        final restoredPlaylist = <Media>[..._playlistBeforeShuffle];
         state = state.copyWith(
-          playlist: Playlist(
-            [..._playlist],
-            index: _index,
+          shuffle: shuffle,
+          playlist: state.playlist.copyWith(
+            index: restoredPlaylist.indexOf(current),
+            medias: restoredPlaylist,
           ),
         );
+
+        _playlistBeforeShuffle.clear();
+
         if (!playlistController.isClosed) {
           playlistController.add(state.playlist);
+        }
+        if (!shuffleController.isClosed) {
+          shuffleController.add(shuffle);
         }
       }
     }
@@ -1229,9 +1268,29 @@ class WebPlayer extends PlatformPlayer {
       await waitForVideoControllerInitializationIfAttached;
 
       if (track.uri) {
-        element.children.removeWhere((e) => e is html.SourceElement);
+        final children = <web.Element>[];
+        for (var i = 0; i < element.children.length; i++) {
+          final child = element.children.item(i);
+          if (child != null) {
+            children.add(child);
+          }
+        }
 
-        final child = html.SourceElement();
+        // Remove all <source> elements.
+        for (final child in children) {
+          if (child.tagName.toLowerCase() == 'source') {
+            element.removeChild(child);
+          }
+        }
+
+        // Create a new <source> element.
+        final source = web.document.createElement('source');
+        source.setAttribute('src', track.id);
+
+        // Append the new <source> element.
+        element.appendChild(source);
+
+        final child = web.HTMLSourceElement();
         child.src = track.id;
         element.append(child);
 
@@ -1254,10 +1313,8 @@ class WebPlayer extends PlatformPlayer {
   }
 
   @override
-  Future<void> setSubtitleTrack(
-    SubtitleTrack track, {
-    bool synchronized = true,
-  }) async {
+  Future<void> setSubtitleTrack(SubtitleTrack track,
+      {bool synchronized = true}) async {
     Future<void> function() async {
       if (disposed) {
         throw AssertionError('[Player] has been disposed');
@@ -1274,31 +1331,36 @@ class WebPlayer extends PlatformPlayer {
       }
 
       if (['no', 'auto'].contains(track.id)) {
-        // N / A
+        // No action needed for these tracks.
       } else if (track.uri || track.data) {
         final String uri;
         if (track.uri) {
           uri = track.id;
         } else if (track.data) {
-          // Create object URL from subtitle data.
-          final src = html.Url.createObjectUrlFromBlob(html.Blob([track.id]));
-          // Revoke the object URL upon [dispose].
+          var array = JSArray();
+          final blobParts = [track.id];
+          for (var i = 0; i < blobParts.length; i++) {
+            array.add(blobParts[i].toJS);
+          }
+          // Create object URL from subtitle data using modern web API.
+          final blob = web.Blob(array as JSArray<web.BlobPart>);
+          final src = web.URL.createObjectURL(blob);
+
+          // Revoke the object URL upon disposal.
           release.add(() async {
-            html.Url.revokeObjectUrl(src);
+            web.URL.revokeObjectURL(src);
           });
           uri = src;
         } else {
           return;
         }
 
-        element.children.removeWhere((e) => e is html.TrackElement);
-
-        final child = html.TrackElement();
+        final child = web.HTMLTrackElement();
         child.src = uri;
         child.kind = 'subtitles';
-        child.label = track.title;
-        child.srclang = track.language;
-        element.append(child);
+        child.label = track.title ?? "";
+        child.srclang = track.language ?? "";
+        element.appendChild(child);
 
         state = state.copyWith(track: state.track.copyWith(subtitle: track));
         if (!trackController.isClosed) {
@@ -1311,35 +1373,47 @@ class WebPlayer extends PlatformPlayer {
           subtitleController.add(['', '']);
         }
 
-        final tracks = element.textTracks?.toList() ?? <html.TextTrack>[];
-        tracks.first.mode = 'hidden';
-        tracks.first.onCueChange.listen((_) {
-          try {
-            final data = tracks.first.activeCues?.map((e) {
-              final text = (e as dynamic).text as String;
-              return text
-                  .replaceAll(RegExp('<[^>]*>'), ' ')
-                  .replaceAll(RegExp('\\s+'), ' ')
-                  .trim();
-            }).toList();
-            if (data != null) {
-              final subtitle = ['', ''];
-              if (data.length == 1) {
-                subtitle[0] = data[0];
-              } else if (data.length == 2) {
-                subtitle[0] = data[0];
-                subtitle[1] = data.skip(1).join('\n');
+        final tracks = element.textTracks;
+        if (tracks.length > 0) {
+          final firstTrack = tracks[0];
+          firstTrack.mode = 'hidden';
+
+          // Use modern event listener for cue changes.
+          firstTrack.oncuechange = (event) {
+            try {
+              // UNTESTED! I have no idea if this works. ~Eric Apostal
+              // it's pretty sketchy, so it has a very good chance of not working.
+              final activeCues = firstTrack.activeCues;
+              if (activeCues != null) {
+                final data = List<String>.from(
+                  (activeCues.dartify as dynamic).map((cue) {
+                    final text = (cue as dynamic).text as String;
+                    return text
+                        .replaceAll(RegExp('<[^>]*>'), ' ')
+                        .replaceAll(RegExp('\\s+'), ' ')
+                        .trim();
+                  }),
+                );
+
+                final subtitle = ['', ''];
+                if (data.length == 1) {
+                  subtitle[0] = data[0];
+                } else if (data.length >= 2) {
+                  subtitle[0] = data[0];
+                  subtitle[1] = data.skip(1).join('\n');
+                }
+
+                state = state.copyWith(subtitle: subtitle);
+                if (!subtitleController.isClosed) {
+                  subtitleController.add(subtitle);
+                }
               }
-              state = state.copyWith(subtitle: subtitle);
-              if (!subtitleController.isClosed) {
-                subtitleController.add(subtitle);
-              }
+            } catch (exception, stacktrace) {
+              print(exception);
+              print(stacktrace);
             }
-          } catch (exception, stacktrace) {
-            print(exception);
-            print(stacktrace);
-          }
-        });
+          } as dynamic;
+        }
       } else {
         throw UnsupportedError(
           '[Player.setSubtitleTrack] is only supported with [SubtitleTrack.uri] & [SubtitleTrack.data] on web',
@@ -1362,10 +1436,11 @@ class WebPlayer extends PlatformPlayer {
   ///
   /// [includeLibassSubtitles] is ignored.
   @override
-  Future<Uint8List?> screenshot(
-      {String? format = 'image/jpeg',
-      bool synchronized = true,
-      bool includeLibassSubtitles = false}) async {
+  Future<Uint8List?> screenshot({
+    String? format = 'image/jpeg',
+    bool synchronized = true,
+    bool includeLibassSubtitles = false,
+  }) async {
     Future<Uint8List?> function() async {
       if (![
         'image/jpeg',
@@ -1388,13 +1463,14 @@ class WebPlayer extends PlatformPlayer {
       try {
         // Kind of limited in usage:
         // https://stackoverflow.com/questions/35244215/html5-video-screenshot-via-canvas-using-cors
-        final canvas = html.CanvasElement();
+        final canvas = web.HTMLCanvasElement();
         canvas.width = element.videoWidth;
         canvas.height = element.videoHeight;
+
         final context = canvas.context2D;
         context.drawImage(element, 0, 0);
 
-        final data = canvas.toDataUrl(format!);
+        final data = canvas.toDataURL(format!);
         final bytes = base64.decode(data.split(',').last);
 
         canvas.remove();
@@ -1415,7 +1491,20 @@ class WebPlayer extends PlatformPlayer {
   void _loadSource(Media media) {
     try {
       if (_isHLS(media.uri)) {
-        final hls = Hls();
+        void setHlsHTTPHeaders(web.XMLHttpRequest xhr, String url) {
+          for (final header in media.httpHeaders!.entries) {
+            xhr.setRequestHeader(header.key, header.value);
+          }
+        }
+
+        final hls = Hls(
+          HlsOptions(
+            xhrSetup: media.httpHeaders != null
+                ? setHlsHTTPHeaders.toJS as XHRSetupCallback
+                : null,
+          ),
+        );
+
         hls.loadSource(media.uri);
         hls.attachMedia(element);
       } else {
@@ -1434,15 +1523,15 @@ class WebPlayer extends PlatformPlayer {
       }
     } catch (exception) {
       // PlayerStream.error
-      final e = exception as html.DomException;
+      final e = exception as web.DOMException;
       if (!errorController.isClosed) {
-        errorController.add(e.message ?? '');
+        errorController.add(e.message);
       }
     }
   }
 
   bool _isHLS(String src) {
-    final userAgent = html.window.navigator.userAgent;
+    final userAgent = web.window.navigator.userAgent;
     final isAndroidChrome =
         userAgent.contains("Android") && userAgent.contains("Chrome");
 
@@ -1484,19 +1573,23 @@ class WebPlayer extends PlatformPlayer {
       bufferingController.add(false);
     }
 
-    element.children.clear();
+    element.innerHTML = ''.toJS;
     state = state.copyWith(track: Track());
     if (!trackController.isClosed) {
       trackController.add(Track());
     }
 
     // PlayerState.state.playlist.index & PlayerState.stream.playlist.index
-    switch (_playlistMode) {
+    switch (state.playlistMode) {
       case PlaylistMode.none:
         {
-          if (_index < _playlist.length - 1) {
-            _index = _index + 1;
-            final current = _playlist[_index];
+          if (state.playlist.index < state.playlist.medias.length - 1) {
+            state = state.copyWith(
+              playlist: state.playlist.copyWith(
+                index: state.playlist.index + 1,
+              ),
+            );
+            final current = state.playlist.medias[state.playlist.index];
             _loadSource(current);
             await play(synchronized: false);
           } else {
@@ -1506,26 +1599,25 @@ class WebPlayer extends PlatformPlayer {
         }
       case PlaylistMode.single:
         {
-          final current = _playlist[_index];
+          final current = state.playlist.medias[state.playlist.index];
           _loadSource(current);
           await play(synchronized: false);
           break;
         }
       case PlaylistMode.loop:
         {
-          _index = (_index + 1) % _playlist.length;
-          final current = _playlist[_index];
+          state = state.copyWith(
+            playlist: state.playlist.copyWith(
+              index: (state.playlist.index + 1) % state.playlist.medias.length,
+            ),
+          );
+          final current = state.playlist.medias[state.playlist.index];
           _loadSource(current);
           await play(synchronized: false);
           break;
         }
     }
     // Update:
-    state = state.copyWith(
-      playlist: state.playlist.copyWith(
-        index: _index,
-      ),
-    );
     if (!playlistController.isClosed) {
       playlistController.add(state.playlist);
     }
@@ -1533,17 +1625,8 @@ class WebPlayer extends PlatformPlayer {
 
   // --------------------------------------------------
 
-  /// Current loaded [Media] queue before shuffle.
-  final List<Media> _shuffle = <Media>[];
-
-  /// Current index of the [Media] in the queue.
-  int _index = 0;
-
-  /// Current loaded [Media] queue.
-  List<Media> _playlist = <Media>[];
-
-  /// Current playlist mode.
-  PlaylistMode _playlistMode = PlaylistMode.none;
+  /// Original playlist stored when shuffle is enabled.
+  final List<Media> _playlistBeforeShuffle = [];
 
   // --------------------------------------------------
 
@@ -1555,10 +1638,10 @@ class WebPlayer extends PlatformPlayer {
   Future<int> get handle => Future.value(id);
 
   /// Unique handle of this [Player] instance.
-  final int id;
+  late int id;
 
   /// [html.VideoElement] instance reference.
-  final html.VideoElement element;
+  late web.HTMLVideoElement element;
 
   /// Whether the [Player] has been disposed.
   bool disposed = false;
@@ -1575,4 +1658,11 @@ class WebPlayer extends PlatformPlayer {
   /// Whether the [WebPlayer] is initialized for unit-testing.
   @visibleForTesting
   static bool test = false;
+}
+
+/// Extensions for [List].
+extension ListExtension<T> on List<T> {
+  /// Returns the element at the given [index] or `null` if the [index] is out of bounds.
+  T? atOrNull(int? index) =>
+      (index != null && index >= 0 && index < length) ? this[index] : null;
 }
