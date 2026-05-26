@@ -63,6 +63,9 @@ static void media_kit_video_plugin_handle_method_call(
     typedef struct _VideoOutputTextureUpdateCallbackData {
       FlMethodChannel* channel;
       gint64 handle;
+      gint64 id;
+      gint64 width;
+      gint64 height;
     } VideoOutputTextureUpdateCallbackData;
     // TODO(@alexmercerind): Fix memory leak.
     VideoOutputTextureUpdateCallbackData* data =
@@ -73,19 +76,28 @@ static void media_kit_video_plugin_handle_method_call(
         self->video_output_manager, handle_value, configuration_value,
         [](gint64 id, gint64 width, gint64 height, gpointer context) {
           auto data = (VideoOutputTextureUpdateCallbackData*)context;
-          FlMethodChannel* channel = data->channel;
-          gint64 handle = data->handle;
-          FlValue* rect = fl_value_new_map();
-          fl_value_set_string_take(rect, "left", fl_value_new_int(0));
-          fl_value_set_string_take(rect, "top", fl_value_new_int(0));
-          fl_value_set_string_take(rect, "width", fl_value_new_int(width));
-          fl_value_set_string_take(rect, "height", fl_value_new_int(height));
-          FlValue* result = fl_value_new_map();
-          fl_value_set_string_take(result, "handle", fl_value_new_int(handle));
-          fl_value_set_string_take(result, "id", fl_value_new_int(id));
-          fl_value_set_string_take(result, "rect", rect);
-          fl_method_channel_invoke_method(channel, "VideoOutput.Resize", result,
-                                          NULL, NULL, NULL);
+          data->id = id;
+          data->width = width;
+          data->height = height;
+          gdk_threads_add_idle(
+              [](gpointer callback_data) -> gboolean {
+                auto cb_data = (VideoOutputTextureUpdateCallbackData*)callback_data;
+                FlMethodChannel* cb_channel = cb_data->channel;
+                gint64 cb_handle = cb_data->handle;
+                FlValue* rect = fl_value_new_map();
+                fl_value_set_string_take(rect, "left", fl_value_new_int(0));
+                fl_value_set_string_take(rect, "top", fl_value_new_int(0));
+                fl_value_set_string_take(rect, "width", fl_value_new_int(cb_data->width));
+                fl_value_set_string_take(rect, "height", fl_value_new_int(cb_data->height));
+                FlValue* result = fl_value_new_map();
+                fl_value_set_string_take(result, "handle", fl_value_new_int(cb_handle));
+                fl_value_set_string_take(result, "id", fl_value_new_int(cb_data->id));
+                fl_value_set_string_take(result, "rect", rect);
+                fl_method_channel_invoke_method(cb_channel, "VideoOutput.Resize", result,
+                                                NULL, NULL, NULL);
+                return FALSE;
+              },
+              data);
         },
         data);
     FlValue* result = fl_value_new_null();

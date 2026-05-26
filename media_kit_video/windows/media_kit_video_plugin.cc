@@ -9,8 +9,39 @@
 #include "utils.h"
 
 #include <Windows.h>
+#include <atomic>
 
 namespace media_kit_video {
+
+// Custom message to dispatch callback to platform thread
+static constexpr UINT kMediaKitVideoInvokeCallbackMsg = WM_APP + 1;
+
+namespace {
+struct InvokeCallbackData {
+  std::function<void()> callback;
+  InvokeCallbackData(std::function<void()> cb) : callback(std::move(cb)) {}
+};
+
+LRESULT CALLBACK MediaKitVideoWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == kMediaKitVideoInvokeCallbackMsg) {
+    auto* data = reinterpret_cast<InvokeCallbackData*>(lparam);
+    if (data) {
+      data->callback();
+      delete data;
+    }
+    return 0;
+  }
+  return DefWindowProc(hwnd, msg, wparam, lparam);
+}
+}  // namespace
+
+HWND GetHWNDFromRegistrar(flutter::PluginRegistrarWindows* registrar) {
+  auto* view = registrar->GetView();
+  if (view) {
+    return view->GetNativeWindow();
+  }
+  return nullptr;
+}
 
 void MediaKitVideoPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
@@ -21,7 +52,8 @@ void MediaKitVideoPlugin::RegisterWithRegistrar(
 MediaKitVideoPlugin::MediaKitVideoPlugin(
     flutter::PluginRegistrarWindows* registrar)
     : registrar_(registrar),
-      video_output_manager_(std::make_unique<VideoOutputManager>(registrar)) {
+      video_output_manager_(std::make_unique<VideoOutputManager>(registrar)),
+      hwnd_(GetHWNDFromRegistrar(registrar)) {
   channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       registrar->messenger(), "com.alexmercerind/media_kit_video",
       &flutter::StandardMethodCodec::GetInstance());
@@ -64,42 +96,46 @@ void MediaKitVideoPlugin::HandleMethodCall(
 
     video_output_manager_->Create(
         handle_value, configuration_value,
-        [channel_ptr = channel_.get(), handle = handle_value](
+        [channel_ptr = channel_.get(), hwnd = hwnd_, handle = handle_value](
             auto id, auto width, auto height) {
-          channel_ptr->InvokeMethod(
-              "VideoOutput.Resize",
-              std::make_unique<flutter::EncodableValue>(flutter::EncodableMap{
-                  {
-                      flutter::EncodableValue("handle"),
-                      flutter::EncodableValue(handle),
-                  },
-                  {
-                      flutter::EncodableValue("id"),
-                      flutter::EncodableValue(id),
-                  },
-                  {
-                      flutter::EncodableValue("rect"),
-                      flutter::EncodableValue(flutter::EncodableMap{
-                          {
-                              flutter::EncodableValue("left"),
-                              flutter::EncodableValue(0),
-                          },
-                          {
-                              flutter::EncodableValue("top"),
-                              flutter::EncodableValue(0),
-                          },
-                          {
-                              flutter::EncodableValue("width"),
-                              flutter::EncodableValue(width),
-                          },
-                          {
-                              flutter::EncodableValue("height"),
-                              flutter::EncodableValue(height),
-                          },
-                      }),
-                  },
-              }),
-              nullptr);
+          auto data = new InvokeCallbackData([channel_ptr, handle, id, width, height]() {
+            channel_ptr->InvokeMethod(
+                "VideoOutput.Resize",
+                std::make_unique<flutter::EncodableValue>(flutter::EncodableMap{
+                    {
+                        flutter::EncodableValue("handle"),
+                        flutter::EncodableValue(handle),
+                    },
+                    {
+                        flutter::EncodableValue("id"),
+                        flutter::EncodableValue(id),
+                    },
+                    {
+                        flutter::EncodableValue("rect"),
+                        flutter::EncodableValue(flutter::EncodableMap{
+                            {
+                                flutter::EncodableValue("left"),
+                                flutter::EncodableValue(0),
+                            },
+                            {
+                                flutter::EncodableValue("top"),
+                                flutter::EncodableValue(0),
+                            },
+                            {
+                                flutter::EncodableValue("width"),
+                                flutter::EncodableValue(width),
+                            },
+                            {
+                                flutter::EncodableValue("height"),
+                                flutter::EncodableValue(height),
+                            },
+                        }),
+                    },
+                }),
+                nullptr);
+          });
+          ::PostMessage(hwnd, kMediaKitVideoInvokeCallbackMsg, 0,
+                        reinterpret_cast<LPARAM>(data));
         });
     result->Success(flutter::EncodableValue(std::monostate{}));
   } else if (method_call.method_name().compare("VideoOutputManager.Dispose") ==

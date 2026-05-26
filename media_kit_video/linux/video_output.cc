@@ -152,8 +152,18 @@ VideoOutput* video_output_new(FlTextureRegistrar* texture_registrar,
                   if (self->destroyed) {
                     return;
                   }
-                  fl_texture_registrar_mark_texture_frame_available(
-                      self->texture_registrar, FL_TEXTURE(self->texture_gl));
+                  gdk_threads_add_idle(
+                      [](gpointer data) -> gboolean {
+                        VideoOutput* self = (VideoOutput*)data;
+                        if (self->destroyed) {
+                          return FALSE;
+                        }
+                        fl_texture_registrar_mark_texture_frame_available(
+                            self->texture_registrar,
+                            FL_TEXTURE(self->texture_gl));
+                        return FALSE;
+                      },
+                      data);
                 },
                 self);
             hardware_acceleration_supported = TRUE;

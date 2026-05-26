@@ -99,7 +99,11 @@ public class VideoOutput implements TextureRegistry.SurfaceProducer.Callback {
             Log.i(TAG, "onSurfaceCreated");
             id = surfaceProducer.id();
             wid = newGlobalObjectRef(surfaceProducer.getSurface());
-            textureUpdateCallback.onTextureUpdate(id, wid, surfaceProducer.getWidth(), surfaceProducer.getHeight());
+            final long finalId = id;
+            final long finalWid = wid;
+            final int width = surfaceProducer.getWidth();
+            final int height = surfaceProducer.getHeight();
+            handler.post(() -> textureUpdateCallback.onTextureUpdate(finalId, finalWid, width, height));
         }
     }
 
@@ -107,7 +111,10 @@ public class VideoOutput implements TextureRegistry.SurfaceProducer.Callback {
     public void onSurfaceDestroyed() {
         synchronized (lock) {
             Log.i(TAG, "onSurfaceDestroyed");
-            textureUpdateCallback.onTextureUpdate(id, 0, surfaceProducer.getWidth(), surfaceProducer.getHeight());
+            final long finalId = id;
+            final int width = surfaceProducer.getWidth();
+            final int height = surfaceProducer.getHeight();
+            handler.post(() -> textureUpdateCallback.onTextureUpdate(finalId, 0, width, height));
             if (wid != 0) {
                 final long widReference = wid;
                 handler.postDelayed(() -> deleteGlobalObjectRef(widReference), 5000);

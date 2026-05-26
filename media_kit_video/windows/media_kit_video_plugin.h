@@ -31,10 +31,13 @@ class MediaKitVideoPlugin : public flutter::Plugin {
       const flutter::MethodCall<flutter::EncodableValue>& method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
+  void InvokeOnPlatformThread(std::function<void()> callback);
+
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_ =
       nullptr;
   std::unique_ptr<VideoOutputManager> video_output_manager_ = nullptr;
+  HWND hwnd_ = nullptr;
 };
 
 }  // namespace media_kit_video
