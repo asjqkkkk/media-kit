@@ -15,6 +15,11 @@ option(MIMALLOC_USE_STATIC_LIBS "Whether to prefer linking to mimalloc staticall
 set(PROJECT_NAME "media_kit_libs_linux")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
+# add runpath, shared libs of a release bundle is in lib dir, plugin must add $ORIGIN to runpath to find libmpv
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--enable-new-dtags -Wl,-z,origin -Wl,-rpath,\\$ORIGIN")
+set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--enable-new-dtags -Wl,-z,origin -Wl,-rpath,\\$ORIGIN")
+
+
 if(MIMALLOC_USE_STATIC_LIBS)
 
   # We use the mimalloc's object file (mimalloc.o) & link the final executable with it.
